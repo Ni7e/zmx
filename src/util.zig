@@ -683,17 +683,30 @@ fn parseDecimal(buf: []const u8, pos: *usize) ?u32 {
     return value;
 }
 
-/// Detect if the payload contains user input that should be printed to the screen or
-/// is a key combination like up-arrow, backspace, enter, ctrl+f, etc.
+/// Detect keyboard input that should transfer ownership to the sending client.
+/// CDXC:Zmx 2026-09-15 WHY:
+/// The output-oriented VT parser misses raw control keys and treats Alt shortcuts as terminal commands, so using only its print actions drops those keys from non-leading attachments.
+/// Mouse, focus, and key-release reports can share a read with a keypress; skip the report and inspect the remaining bytes before deciding whether to transfer leadership.
 pub fn isUserInput(payload: []const u8) bool {
     var parser = ghostty_vt.Parser.init();
     var i: usize = 0;
     while (i < payload.len) {
-        if (payload[i] == 0x1b and i + 2 < payload.len and payload[i + 1] == '[') {
-            if (parseKittyCsiU(payload[i + 2 ..])) |kitty| {
-                if (kitty.event_type != 3) return true;
-                i += 2 + kitty.consumed;
-                continue;
+        if (parser.state == .ground) {
+            if (payload[i] == 0x1b) {
+                if (i + 1 == payload.len) return true;
+                switch (payload[i + 1]) {
+                    '[', ']', 'P', 'X', '^', '_', '\\' => {},
+                    else => return true, // Alt key, SS3 key, or repeated Escape.
+                }
+                if (payload[i + 1] == '[') {
+                    if (parseKittyCsiU(payload[i + 2 ..])) |kitty| {
+                        if (kitty.event_type != 3) return true;
+                        i += 2 + kitty.consumed;
+                        continue;
+                    }
+                }
+            } else if (payload[i] < 0x20 or payload[i] == 0x7f) {
+                return true;
             }
         }
 
@@ -703,24 +716,22 @@ pub fn isUserInput(payload: []const u8) bool {
             switch (action) {
                 .print => return true, // printable characters
                 .csi_dispatch => |csi| {
+                    // X10 mouse reports have three coordinate/button bytes
+                    // outside the CSI. They are not subsequent typed text.
+                    if (csi.final == 'M' and csi.intermediates.len == 0 and csi.params.len == 0) {
+                        i += @min(@as(usize, 3), payload.len - i - 1);
+                        continue;
+                    }
+                    if (csi.intermediates.len != 0) continue;
                     // kitty keyboard: CSI ... u or CSI ... ~
                     // legacy modified keys: CSI 27 ; ... ~
-                    // arrow/function keys with modifiers: CSI 1 ; <mod> A-D
                     if (csi.final == 'u' or csi.final == '~') return true;
-                    // modified arrow keys (e.g., Ctrl+F sends CSI 1;5C in legacy mode)
-                    if (csi.final >= 'A' and csi.final <= 'D' and csi.params.len > 1) return true;
-                    // mouse events: CSI M (basic) or CSI < (SGR extended) - EXCLUDE these
-                    // only intentional keyboard input should trigger leader switch
-                    if (csi.final == 'M' or csi.final == '<') return false;
-                    // focus events: CSI I (focus in) or CSI O (focus out) - EXCLUDE these
-                    // these are automatic terminal events, not user typing
-                    if (csi.final == 'I' or csi.final == 'O') return false;
-                },
-                .execute => |code| {
-                    // CR, LF, tab, backspace, and Ctrl+G/BEL are user input.
-                    // Ctrl+G opens the prompt editor, so the pressing client
-                    // must become leader before prompt-editor-capability runs.
-                    if (code == 0x0D or code == 0x0A or code == 0x09 or code == 0x08 or code == 0x07) return true;
+                    if (csi.final >= 'A' and csi.final <= 'D') return true;
+                    // Home/End and Shift+Tab, including modifier forms.
+                    // A two-coordinate CUP command is not a Home key.
+                    if (csi.final == 'H' or csi.final == 'F' or csi.final == 'Z') {
+                        if (csi.params.len <= 1 or (csi.params.len == 2 and csi.params[0] == 1)) return true;
+                    }
                 },
                 else => {},
             }
@@ -2244,8 +2255,8 @@ test "isUserInput: kitty keyboard sequences" {
 test "isUserInput: mouse events (CSI M) excluded" {
     // Basic mouse tracking (SGR disabled): CSI M Cb Cx Cy
     // Mouse events should NOT trigger leader switch
-    try testing.expect(!isUserInput("\x1b[M@ 0 0")); // button 0, pos 0,0
-    try testing.expect(!isUserInput("\x1b[M@ 1 1")); // button 1, pos 1,1
+    try testing.expect(!isUserInput("\x1b[M !!")); // button 0, column 1, row 1
+    try testing.expect(!isUserInput("\x1b[M\"\"\"")); // button 2, column 2, row 2
 }
 
 test "isUserInput: mouse events SGR mode CSI < excluded" {
