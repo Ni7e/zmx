@@ -1119,6 +1119,7 @@ pub const Daemon = struct {
     /// CDXC:Zmx 2026-09-05 DECISION:
     /// User: a client is chat exactly when it would report visible if the session were in terminal view, on screen right now.
     /// Visible terminals always own the PTY; the most recently active visible client wins.
+    /// Clarified 2026-09-24: prompt-editor attach clients are editing accessories, not displays — they are never leader candidates and never size the grid, so a session whose viewer parked keeps its grid instead of bouncing to the editor's size on every tab switch.
     /// Without a visible client, only a chat claim may widen the grid to at least 200 columns, using the freshest parked rows.
     /// With neither claim, retain the grid unchanged so terminal tab switches do not reflow the agent TUI.
     /// Dropping a chat claim never narrows an unattended grid. Headless sessions still start at 50x200.
@@ -1130,6 +1131,7 @@ pub const Daemon = struct {
         var chat_claim = false;
         for (self.clients.items) |client| {
             if (!client.is_terminal) continue;
+            if (client.prompt_editor_capabilities != 0) continue;
             chat_claim = chat_claim or client.visibility == .chat;
             if (client.visibility != .visible) {
                 if (hidden == null or client.activity > hidden.?.activity) hidden = client;
