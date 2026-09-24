@@ -779,9 +779,8 @@ fn writeColorOverrides(writer: *std.Io.Writer, term: *const ghostty_vt.Terminal)
     writeDynamicColor(writer, .cursor, colors.cursor);
 }
 
-/// CDXC:Zmx 2026-09-07 WHY:
-/// Replay must preserve soft wraps so later resizes can reflow them; the formatter's default inserts hard newlines at every physical row.
-/// Emit unwrapped content with autowrap enabled, then restore the application's mode after replay, including when the application disabled wrapping before the snapshot.
+/// CDXC:Zmx 2026-09-24 WHY:
+/// Replay must preserve soft wraps for later reflow, so emit unwrapped content with autowrap enabled and restore the application's mode afterward. Move every replayed history row beyond the client's viewport before clearing the live grid, as wmx's history snapshot does; otherwise short scrollback disappears on attachment.
 pub fn serializeTerminalState(alloc: std.mem.Allocator, term: *ghostty_vt.Terminal) ?[]const u8 {
     var builder: std.Io.Writer.Allocating = .init(alloc);
     defer builder.deinit();
@@ -844,6 +843,13 @@ pub fn serializeTerminalState(alloc: std.mem.Allocator, term: *ghostty_vt.Termin
             scroll_fmt.format(&builder.writer) catch |err| {
                 std.log.warn("failed to format scrollback err={s}", .{@errorName(err)});
             };
+        }
+
+        // handleInit resizes to the newly attached leader before serializing.
+        // The formatter leaves its final row unterminated. Flush it and the
+        // remaining viewport so the clear cannot erase retained history.
+        for (0..pages.rows) |_| {
+            builder.writer.writeAll("\r\n") catch return null;
         }
 
         // Clear visible screen after scrollback. \x1b[2J clears only the visible

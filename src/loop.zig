@@ -1436,9 +1436,9 @@ pub const Daemon = struct {
         // shell's own SIGWINCH redraw still arrives after the snapshot.
         try resizeTerm(gpa, term, resize.cols, resize.rows);
 
-        // Only serialize on re-attach (has_had_client), not first attach, to avoid
-        // interfering with shell initialization (DA1 queries, etc.)
-        if (self.has_pty_output and self.has_had_client) {
+        // Detached startup can finish before the first terminal attaches. Restore
+        // its retained output too; this snapshot does not replay device queries.
+        if (self.has_pty_output) {
             const cursor = &term.screens.active.cursor;
             std.log.debug(
                 "cursor before serialize: x={d} y={d} pending_wrap={}",
@@ -1475,7 +1475,7 @@ pub const Daemon = struct {
             }
         }
 
-        // Mark that we've had a client init, so subsequent clients get terminal state
+        // Subsequent attachments also request a foreground-process repaint.
         self.has_had_client = true;
 
         std.log.debug("init resize rows={d} cols={d}", .{ resize.rows, resize.cols });
